@@ -42,11 +42,11 @@ YAW_STABLE_COUNT     = 3
 
 YAW_MAX_SPEED        = 35
 YAW_DEADZONE         = 3.0
-YAW_KP               = 2.5
+YAW_KP               = 0.04
 YAW_KI               = 0.02
 YAW_KD               = 0.0
 YAW_INTEGRAL_LIMIT   = 50.0
-MIN_APPLICABLE_SPEED_YAW = 7
+MIN_APPLICABLE_SPEED_YAW = 10
 
 # =====================================================
 # ROLL — نرمالایز شده (0..1)
@@ -94,7 +94,7 @@ APPROACH_MAX_TIME      = 20.0
 # =====================================================
 PASS_FORWARD_SPEED = 40
 PASS_EXTRA_TIME    = 1.25
-PASS_MAX_TIME      = 15.0
+PASS_MAX_TIME      = 2.0
 PASS_AREA_DROP     = 0.45
 
 # =====================================================
@@ -417,23 +417,20 @@ class Aligner:
         if self.smoothed_yaw_deg is None:
             self.smoothed_yaw_deg = yaw_err_raw
         else:
-            self.smoothed_yaw_deg = ((1 - self.ALPHA) * self.smoothed_yaw_deg
-                                     + self.ALPHA * yaw_err_raw)
+            self.smoothed_yaw_deg = ((1 - self.ALPHA) * self.smoothed_yaw_deg + self.ALPHA * yaw_err_raw)
 
         if self.smoothed_roll is None:
             self.smoothed_roll = roll_err_raw
         else:
-            self.smoothed_roll = ((1 - self.ALPHA) * self.smoothed_roll
-                                  + self.ALPHA * roll_err_raw)
+            self.smoothed_roll = ((1 - self.ALPHA) * self.smoothed_roll + self.ALPHA * roll_err_raw)
 
         if self.smoothed_throttle is None:
             self.smoothed_throttle = thr_err_raw
         else:
-            self.smoothed_throttle = ((1 - self.ALPHA) * self.smoothed_throttle
-                                      + self.ALPHA * thr_err_raw)
+            self.smoothed_throttle = ((1 - self.ALPHA) * self.smoothed_throttle + self.ALPHA * thr_err_raw)
 
         yaw_err  = self.smoothed_yaw_deg      # درجه
-        roll_err = self.smoothed_roll         # نرمالایز
+        roll_err = self.smoothed_roll       # نرمالایز
         thr_err  = self.smoothed_throttle     # پیکسل
 
         yaw_cmd = 0
@@ -459,10 +456,8 @@ class Aligner:
                 else:
                     pid_out = self.pid_yaw.update(yaw_err)
                     yaw_cmd = int(np.clip(pid_out, -YAW_MAX_SPEED, YAW_MAX_SPEED))
-                    if (abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW
-                            and abs(yaw_err) > YAW_DEADZONE):
-                        yaw_cmd = (MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
-                                   else -MIN_APPLICABLE_SPEED_YAW)
+                    if (abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW and abs(yaw_err) > YAW_DEADZONE):
+                        yaw_cmd = (-MIN_APPLICABLE_SPEED_YAW if yaw_err > 0 else MIN_APPLICABLE_SPEED_YAW)
                     self.yaw_stable_count = 0
             else:
                 if abs(yaw_err) > self.EXIT_YAW_THRESHOLD:
