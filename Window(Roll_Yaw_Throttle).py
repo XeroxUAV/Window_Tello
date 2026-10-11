@@ -9,7 +9,7 @@ import keyboard
 # =====================================================
 # SETTINGS
 # =====================================================
-MODEL_PATH = r"D:\SBU\Tello\best.pt"
+MODEL_PATH = r"D:\Window_Tello\best.pt"
 CONFIDENCE = 0.5
 FLIGHT_MODE = True
 MIN_BATTERY = 20
@@ -24,36 +24,40 @@ MAX_UP_COUNT = 5
 
 MIN_MASK_AREA = 2000
 
+# =====================================================
+# YAW + ROLL — همزمان از مرکز پنجره
+# =====================================================
 # --- YAW ---
 YAW_THRESHOLD = 15.0
 YAW_STABLE_COUNT = 3
 
-# --- ROLL (حالا از IMU، بر حسب درجه) ---
-ROLL_THRESHOLD = 3.0            # داخل این محدوده = صفر (درجه)
-ROLL_EXIT_THRESHOLD = 5.0       # خروج از CENTERED (درجه)
+# --- ROLL (نرمالایز از مرکز پنجره) ---
+ROLL_THRESHOLD = 0.04
+ROLL_EXIT_THRESHOLD = 0.06
 ROLL_STABLE_COUNT = 3
-ENABLE_ROLL = True              # اگر True باشه از IMU Tello می‌خونه
+ENABLE_ROLL = True
+ROLL_INVERT = True               # ✅ اصلاح شد: True (علامت برعکس)
 
 # --- THROTTLE ---
 THROTTLE_THRESHOLD = 13.0
 THROTTLE_STABLE_COUNT = 3
 
 # =====================================================
-# PID SETTINGS — YAW (پیکسل)
+# PID SETTINGS — YAW (سریع‌تر)
 # =====================================================
 YAW_MAX_SPEED = 35
 YAW_DEADZONE = 15.0
-YAW_KP = 0.04
+YAW_KP = 0.035
 YAW_KI = 0.0003
 YAW_KD = 0.0
 YAW_INTEGRAL_LIMIT = 100.0
 
 # =====================================================
-# PID SETTINGS — ROLL (درجه از IMU)
+# PID SETTINGS — ROLL (آروم‌تر)
 # =====================================================
-ROLL_MAX_SPEED = 30
-ROLL_DEADZONE = 3.0             # درجه
-ROLL_KP = 0.8                   # ضریب مناسب برای درجه
+ROLL_MAX_SPEED = 18
+ROLL_DEADZONE = 0.04
+ROLL_KP = 1.5
 ROLL_KI = 0.0
 ROLL_KD = 0.0
 ROLL_INTEGRAL_LIMIT = 20.0
@@ -66,15 +70,17 @@ THR_KI = 0.05
 THR_KD = 0.0
 THR_INTEGRAL_LIMIT = 100.0
 THR_MAX_SPEED = 25
+
+# --- حداقل سرعت‌ها ---
 MIN_APPLICABLE_SPEED_THR = 10
-MIN_APPLICABLE_SPEED_YAW = 7
-MIN_APPLICABLE_SPEED_ROLL = 10
+MIN_APPLICABLE_SPEED_YAW = 9
+MIN_APPLICABLE_SPEED_ROLL = 7
 
 # --- APPROACH ---
 APPROACH_SPEED = 20
 APPROACH_CENTER_DEADZONE_YAW = 10
 APPROACH_CENTER_DEADZONE_THR = 9
-APPROACH_CENTER_DEADZONE_ROLL = 2.0     # درجه
+APPROACH_CENTER_DEADZONE_ROLL = 0.03
 APPROACH_CENTER_MAX = 15
 
 AREA_RATIO_THRESHOLD = 0.35
@@ -89,7 +95,7 @@ PASS_AREA_DROP = 0.45
 
 # --- Camera Offset ---
 CAMERA_CENTER_OFFSET_X = 0
-CAMERA_CENTER_OFFSET_Y = 0      # ← اصلاح شد: وسط فریم
+CAMERA_CENTER_OFFSET_Y = 0
 
 
 # =====================================================
@@ -145,7 +151,7 @@ def get_camera_center(frame_shape):
     """مرکز دوربین = وسط فریم + افست"""
     h, w = frame_shape[:2]
     cx = w // 2 + CAMERA_CENTER_OFFSET_X
-    cy = h // 2 + CAMERA_CENTER_OFFSET_Y
+    cy = 118
     return (cx, cy)
 
 
@@ -163,20 +169,35 @@ def calculate_throttle_error(window_center, camera_center):
     return float(window_center[1] - camera_center[1])
 
 
-def get_real_roll_error(me):
+def calculate_roll_error(window_center, frame_shape):
     """
-    Roll واقعی از IMU Tello (بر حسب درجه).
-    مقدار مثبت = کج شده به راست، منفی = کج شده به چپ.
+    Roll = عدم تعادل افقی پنجره نسبت به لبه‌های فریم.
+
+    حالا با فرمول اصلاح‌شده:
+      roll_error = (dist_right - dist_left) / total
+      + ROLL_INVERT
+
+    نتیجه:
+      پنجره راست → roll_err مثبت → roll_cmd مثبت (برو راست)
+      پنجره چپ  → roll_err منفی → roll_cmd منفی (برو چپ)
     """
-    if not ENABLE_ROLL:
-        return 0.0
-    try:
-        state = me.get_current_state()
-        # djitellopy کلید 'roll' رو در state برمی‌گردونه (درجه)
-        roll_deg = float(state.get("roll", 0.0))
-        return roll_deg
-    except Exception:
-        return 0.0
+    if window_center is None:
+        return None, None, None
+    h, w = frame_shape[:2]
+    cx = window_center[0]
+    dist_left = cx
+    dist_right = w - cx
+    total = dist_left + dist_right
+    if total == 0:
+        return 0.0, dist_left, dist_right
+
+    # ✅ فرمول اصلاح‌شده (R - L به‌جای L - R)
+    roll_error = float(dist_right - dist_left) / total
+
+    if ROLL_INVERT:
+        roll_error = -roll_error
+
+    return roll_error, int(dist_left), int(dist_right)
 
 
 # =====================================================
@@ -201,9 +222,8 @@ class Aligner:
         self.pid_yaw = PID(Kp=YAW_KP, Ki=YAW_KI, Kd=YAW_KD,
                            integral_limit=YAW_INTEGRAL_LIMIT)
 
-        # ---- ROLL (از IMU) ----
+        # ---- ROLL (از مرکز پنجره) ----
         self.roll_stable_count = 0
-        # اگر Roll غیرفعاله، از اول centered در نظر بگیر
         self.roll_centered = not ENABLE_ROLL
         self.EXIT_ROLL_THRESHOLD = ROLL_EXIT_THRESHOLD
         self.pid_roll = PID(Kp=ROLL_KP, Ki=ROLL_KI, Kd=ROLL_KD,
@@ -237,12 +257,16 @@ class Aligner:
         self.MAX_LOST_FRAMES = 25
         self.stage = "YAW"
 
+        # نمایش
+        self.last_dist_left = None
+        self.last_dist_right = None
+        self.control_mode = "SIMULTANEOUS"
+
     def reset(self):
         self.__init__()
 
     # ---------------------------------------------
-    def update(self, window_center, bbox, area, frame_shape,
-               camera_center, roll_err_raw_imu=0.0):
+    def update(self, window_center, bbox, area, frame_shape, camera_center):
 
         # =====================================================
         # PASS
@@ -391,15 +415,14 @@ class Aligner:
             self.up_after_search = False
             self.up_start_time = None
 
-        # ---- خطاها ----
+        # ---- خطاها (همه از مرکز پنجره) ----
         yaw_err_raw = calculate_yaw_error(window_center, camera_center)
         thr_err_raw = calculate_throttle_error(window_center, camera_center)
-
-        # ROLL: از IMU (درجه) — منبع کاملاً مستقل از Yaw
-        if ENABLE_ROLL:
-            roll_err_raw = roll_err_raw_imu
-        else:
-            roll_err_raw = 0.0
+        roll_err_raw, dist_left, dist_right = calculate_roll_error(
+            window_center, frame_shape
+        )
+        self.last_dist_left = dist_left
+        self.last_dist_right = dist_right
 
         # ---- smoothing ----
         if self.smoothed_yaw is None:
@@ -419,7 +442,7 @@ class Aligner:
 
         yaw_err = self.smoothed_yaw
         thr_err = self.smoothed_throttle
-        roll_err = self.smoothed_roll   # ← درجه (از IMU)
+        roll_err = self.smoothed_roll
 
         yaw_cmd = 0
         throttle_cmd = 0
@@ -427,12 +450,13 @@ class Aligner:
         roll_cmd = 0
 
         # =====================================================
-        # مرحله ۱: YAW + ROLL
+        # مرحله ۱: YAW + ROLL — کاملاً همزمان
         # =====================================================
         if not (self.yaw_centered and self.roll_centered):
             self.stage = "YAW+ROLL"
+            self.control_mode = "SIMULTANEOUS"
 
-            # ---------- YAW ----------
+            # ---------- YAW (سریع‌تر) ----------
             if not self.yaw_centered:
                 if abs(yaw_err) < YAW_THRESHOLD:
                     yaw_cmd = 0
@@ -445,7 +469,8 @@ class Aligner:
                     pid_out = self.pid_yaw.update(yaw_err)
                     yaw_cmd = int(np.clip(pid_out, -YAW_MAX_SPEED, YAW_MAX_SPEED))
                     if abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW and abs(yaw_err) > YAW_DEADZONE:
-                        yaw_cmd = (MIN_APPLICABLE_SPEED_YAW if yaw_err > 0 else -MIN_APPLICABLE_SPEED_YAW)
+                        yaw_cmd = (MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
+                                   else -MIN_APPLICABLE_SPEED_YAW)
                     self.yaw_stable_count = 0
             else:
                 if abs(yaw_err) > self.EXIT_YAW_THRESHOLD:
@@ -454,7 +479,7 @@ class Aligner:
                     self.yaw_stable_count = 0
                     self.pid_yaw.reset()
 
-            # ---------- ROLL (از IMU) ----------
+            # ---------- ROLL (آروم‌تر، همزمان با Yaw) ----------
             if ENABLE_ROLL:
                 if not self.roll_centered:
                     if abs(roll_err) < ROLL_THRESHOLD:
@@ -463,10 +488,10 @@ class Aligner:
                         self.roll_stable_count += 1
                         if self.roll_stable_count >= ROLL_STABLE_COUNT:
                             self.roll_centered = True
-                            print(f"[INFO] ✅ ROLL CENTERED (err={roll_err:+.2f}°)")
+                            print(f"[INFO] ✅ ROLL CENTERED (err={roll_err:+.3f})")
                     else:
-                        # roll_err>0 → کج شده به راست → به چپ حرکت کن (lr منفی)
-                        pid_out = self.pid_roll.update(-roll_err)
+                        # با فرمول اصلاح‌شده: roll_err>0 → پنجره راست → برو راست → lr مثبت
+                        pid_out = self.pid_roll.update(roll_err)
                         roll_cmd = int(np.clip(pid_out, -ROLL_MAX_SPEED, ROLL_MAX_SPEED))
                         if abs(roll_cmd) < MIN_APPLICABLE_SPEED_ROLL and abs(roll_err) > ROLL_DEADZONE:
                             roll_cmd = (MIN_APPLICABLE_SPEED_ROLL if roll_err > 0
@@ -474,13 +499,13 @@ class Aligner:
                         self.roll_stable_count = 0
                 else:
                     if abs(roll_err) > self.EXIT_ROLL_THRESHOLD:
-                        print(f"[INFO] 🔄 EXIT ROLL (err={roll_err:+.2f}°)")
+                        print(f"[INFO] 🔄 EXIT ROLL (err={roll_err:+.3f})")
                         self.roll_centered = False
                         self.roll_stable_count = 0
                         self.pid_roll.reset()
 
             if self.yaw_centered and self.roll_centered:
-                print(f"[INFO] 🎯 YAW + ROLL ALIGNED")
+                print(f"[INFO] 🎯 YAW + ROLL ALIGNED (simultaneous)")
 
         # =====================================================
         # مرحله ۲: THROTTLE
@@ -527,7 +552,7 @@ class Aligner:
             now = time.time()
             elapsed = now - self.approach_start_time
 
-            # YAW در APPROACH
+            # YAW در APPROACH (سریع‌تر)
             if abs(yaw_err) > APPROACH_CENTER_DEADZONE_YAW:
                 yaw_cmd = int(np.clip(
                     self.pid_yaw.update(yaw_err),
@@ -537,10 +562,10 @@ class Aligner:
                     yaw_cmd = (MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
                                else -MIN_APPLICABLE_SPEED_YAW)
 
-            # ROLL در APPROACH (از IMU)
+            # ROLL در APPROACH (آروم‌تر، همزمان)
             if ENABLE_ROLL and abs(roll_err) > APPROACH_CENTER_DEADZONE_ROLL:
                 roll_cmd = int(np.clip(
-                    self.pid_roll.update(-roll_err),
+                    self.pid_roll.update(roll_err),
                     -APPROACH_CENTER_MAX, APPROACH_CENTER_MAX
                 ))
                 if abs(roll_cmd) < MIN_APPLICABLE_SPEED_ROLL:
@@ -632,6 +657,7 @@ class Aligner:
             "roll_centered": roll_c,
             "throttle_centered": thr_c,
             "pass_completed": pass_done,
+            "control_mode": getattr(self, "control_mode", "IDLE"),
         }
 
 
@@ -665,6 +691,13 @@ def draw_info(frame, info, window_center=None, camera_center=None,
         # خط Yaw (زرد)
         cv2.line(frame, (ccx, ccy), (wcx, wcy), (255, 255, 0), 2)
 
+        if dist_left is not None:
+            cv2.putText(frame, f"L={dist_left}px", (10, wcy - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+        if dist_right is not None:
+            cv2.putText(frame, f"R={dist_right}px", (w - 100, wcy - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
     # HUD
     stage = info["stage"]
     stage_colors = {
@@ -678,6 +711,12 @@ def draw_info(frame, info, window_center=None, camera_center=None,
     cv2.putText(frame, f"STAGE: {stage}", (10, 70),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
+    # MODE
+    cm = info.get("control_mode", "IDLE")
+    cm_color = (0, 255, 255) if cm == "SIMULTANEOUS" else (200, 200, 200)
+    cv2.putText(frame, f"MODE: {cm}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, cm_color, 2)
+
     ye = info.get("yaw_error")
     if ye is not None:
         c = (0, 255, 0) if info.get("yaw_centered") else (0, 255, 255)
@@ -689,7 +728,7 @@ def draw_info(frame, info, window_center=None, camera_center=None,
     if re is not None:
         c = (0, 255, 0) if info.get("roll_centered") else (255, 0, 255)
         cv2.putText(frame,
-                    f"ROLL = {re:+.2f}deg  CMD = {info.get('roll_cmd', 0):+d}",
+                    f"ROLL = {re:+.3f}  CMD = {info.get('roll_cmd', 0):+d}",
                     (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
 
     te = info.get("throttle_error")
@@ -762,7 +801,7 @@ try:
         frame = cv2.resize(frame, (640, 480))
 
         if frame_counter == 5:
-            me.send_rc_control(0, 0, 40, 0)
+            me.send_rc_control(0, 0, 50, 0)
             time.sleep(1)
             me.send_rc_control(0, 0, 0, 0)
 
@@ -804,18 +843,17 @@ try:
                         (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (0, 200, 255), 1)
 
-        # 🆕 خوندن Roll واقعی از IMU
-        roll_err_raw_imu = get_real_roll_error(me)
-
+        # Roll از مرکز پنجره (نه IMU)
         info = aligner.update(window_center, best_box, best_area,
-                              frame.shape, camera_center,
-                              roll_err_raw_imu=roll_err_raw_imu)
+                              frame.shape, camera_center)
 
         draw_info(frame, info,
                   window_center=window_center,
-                  camera_center=camera_center)
+                  camera_center=camera_center,
+                  dist_left=getattr(aligner, "last_dist_left", None),
+                  dist_right=getattr(aligner, "last_dist_right", None))
 
-        print(f"[{info['stage']}] "
+        print(f"[{info['stage']}] MODE:{info.get('control_mode', 'IDLE')} "
               f"LR:{info.get('roll_cmd', 0):+d} "
               f"FB:{info.get('forward_cmd', 0):+d} "
               f"UD:{info.get('throttle_cmd', 0):+d} "
