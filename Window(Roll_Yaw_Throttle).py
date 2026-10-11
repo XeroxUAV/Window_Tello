@@ -47,8 +47,8 @@ THROTTLE_STABLE_COUNT = 3
 # =====================================================
 YAW_MAX_SPEED = 35
 YAW_DEADZONE = 15.0
-YAW_KP = 0.035
-YAW_KI = 0.0003
+YAW_KP = 0.03
+YAW_KI = 0.00
 YAW_KD = 0.0
 YAW_INTEGRAL_LIMIT = 100.0
 
@@ -57,7 +57,7 @@ YAW_INTEGRAL_LIMIT = 100.0
 # =====================================================
 ROLL_MAX_SPEED = 18
 ROLL_DEADZONE = 0.04
-ROLL_KP = 1.5
+ROLL_KP = 2
 ROLL_KI = 0.0
 ROLL_KD = 0.0
 ROLL_INTEGRAL_LIMIT = 20.0
@@ -74,7 +74,7 @@ THR_MAX_SPEED = 25
 # --- حداقل سرعت‌ها ---
 MIN_APPLICABLE_SPEED_THR = 10
 MIN_APPLICABLE_SPEED_YAW = 9
-MIN_APPLICABLE_SPEED_ROLL = 7
+MIN_APPLICABLE_SPEED_ROLL = 9
 
 # --- APPROACH ---
 APPROACH_SPEED = 20
