@@ -8,14 +8,8 @@ import torch.nn.functional as F
 
 MIN_MASK_AREA = 2000
 
-# =====================================================
-# ابعاد واقعی پنجره (سانتی‌متر) → 85cm × 100cm
-# =====================================================
 WINDOW_WIDTH_CM  = 85.0
 WINDOW_HEIGHT_CM = 100.0
-
-_HALF_W = WINDOW_WIDTH_CM  / 2.0   # 42.5
-_HALF_H = WINDOW_HEIGHT_CM / 2.0   # 50.0
 
 
 # =====================================================
@@ -49,7 +43,6 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
     """
     h, w = frame_shape[:2]
 
-    # Resize mask to frame size
     mask = F.interpolate(
         raw_mask_tensor.unsqueeze(0).unsqueeze(0).float().to(device),
         size=(h, w),
@@ -59,7 +52,6 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
 
     mask = (mask > 0.75).cpu().numpy().astype(np.uint8)
 
-    # Find contours
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -69,7 +61,6 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
     if cv2.contourArea(contour) < min_area:
         return 0.0, None
 
-    # Approximate polygon
     epsilon = 0.02 * cv2.arcLength(contour, True)
     approx = cv2.approxPolyDP(contour, epsilon, True)
 
@@ -79,21 +70,16 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
 
     image_points = order_corners_clockwise(approx).astype(np.float32)
 
-    # -------------------------------------------------
-    # نقاط واقعی پنجره (85cm × 100cm) در صفحه Z=0
-    # ترتیب: TL, TR, BR, BL
-    # -------------------------------------------------
     half_w = window_w_cm / 2.0
     half_h = window_h_cm / 2.0
 
     object_points = np.array([
-        [-half_w, -half_h, 0],   # Top-Left
-        [ half_w, -half_h, 0],   # Top-Right
-        [ half_w,  half_h, 0],   # Bottom-Right
-        [-half_w,  half_h, 0],   # Bottom-Left
+        [-half_w, -half_h, 0],
+        [ half_w, -half_h, 0],
+        [ half_w,  half_h, 0],
+        [-half_w,  half_h, 0],
     ], dtype=np.float32)
 
-    # Tello camera matrix
     camera_matrix = np.array([
         [648.0, 0, 320.0],
         [0, 647.0, 240.0],
@@ -111,15 +97,13 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
         return 0.0, image_points.astype(np.int32)
 
     R, _ = cv2.Rodrigues(rvec)
-    normal = R[:, 2]  # local Z
+    normal = R[:, 2]
 
     yaw_error = np.degrees(np.arctan2(normal[0], normal[2]))
 
-    # Dead zone
     if abs(yaw_error) < 1.0:
         yaw_error = 0.0
 
-    # EMA smoothing
     if smoothed_yaw_ref is not None:
         if smoothed_yaw_ref[0] is None:
             smoothed_yaw_ref[0] = yaw_error
@@ -131,25 +115,47 @@ def calculate_yaw_error(raw_mask_tensor, frame_shape,
 
 
 # =====================================================
-# ROLL از مرکز پنجره
+# YAW از مرکز پنجره (افقی نرمالایز شده)
 # =====================================================
-def calculate_roll_error(window_center, frame_shape):
+def calculate_yaw_error_center(window_center, camera_center, frame_shape):
     """
-    Roll error = (dist_left - dist_right) / (dist_left + dist_right)
-    range: [-1, +1]  → 0 = وسط
+    Yaw Error = (window_x - cam_x) / (frame_width / 2)
+    range ≈ [-1, +1] → 0 = هم‌راستا با مرکز افقی دوربین
     """
-    if window_center is None:
+    if window_center is None or camera_center is None:
+        return None
+    h, w = frame_shape[:2]
+    half_w = w / 2.0
+    if half_w == 0:
+        return 0.0
+    return float(window_center[0] - camera_center[0]) / half_w
+
+
+# =====================================================
+# ROLL از مرکز پنجره (عمودی نرمالایز شده)
+# =====================================================
+def calculate_roll_error(window_center, camera_center, frame_shape):
+    """
+    Roll Error = (window_y - cam_y) / (frame_height / 2)
+    range ≈ [-1, +1] → 0 = هم‌راستا با مرکز عمودی دوربین
+
+    Returns: (roll_error_normalized, dist_left, dist_right)
+    """
+    if window_center is None or camera_center is None:
         return None, None, None
 
     h, w = frame_shape[:2]
-    cx = window_center[0]
+    wcx = window_center[0]
+    wcy = window_center[1]
+    ccy = camera_center[1]
 
-    dist_left = cx
-    dist_right = w - cx
-    total = dist_left + dist_right
+    # فقط برای نمایش
+    dist_left  = wcx
+    dist_right = w - wcx
 
-    if total == 0:
-        return 0.0, dist_left, dist_right
+    half_h = h / 2.0
+    if half_h == 0:
+        return 0.0, int(dist_left), int(dist_right)
 
-    roll_error = float(dist_left - dist_right) / total
+    roll_error = float(wcy - ccy) / half_h
     return roll_error, int(dist_left), int(dist_right)

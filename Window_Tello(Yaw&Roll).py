@@ -11,6 +11,7 @@ import keyboard
 
 from vision_utils import (
     calculate_yaw_error,
+    calculate_yaw_error_center,
     calculate_roll_error,
     order_corners_clockwise,
 )
@@ -34,37 +35,39 @@ MAX_UP_COUNT = 5
 MIN_MASK_AREA = 2000
 
 # =====================================================
-# YAW — درجه (solvePnP)
+# YAW — اختلاف افقی مرکز پنجره با مرکز دوربین
+# (نرمالایز به نصف عرض فریم)
 # =====================================================
-YAW_THRESHOLD        = 3.0
-YAW_EXIT_THRESHOLD   = 6.0
+YAW_THRESHOLD        = 0.05
+YAW_EXIT_THRESHOLD   = 0.09
 YAW_STABLE_COUNT     = 3
 
 YAW_MAX_SPEED        = 35
-YAW_DEADZONE         = 3.0
-YAW_KP               = 0.04
-YAW_KI               = 0.02
+YAW_DEADZONE         = 0.05
+YAW_KP               = 30.0
+YAW_KI               = 0.0
 YAW_KD               = 0.0
-YAW_INTEGRAL_LIMIT   = 50.0
+YAW_INTEGRAL_LIMIT   = 20.0
 MIN_APPLICABLE_SPEED_YAW = 10
 
 # =====================================================
-# ROLL — نرمالایز شده (0..1)
+# ROLL — اختلاف عمودی مرکز پنجره با مرکز دوربین
+# (نرمالایز به نصف ارتفاع فریم)
 # =====================================================
-ROLL_THRESHOLD       = 0.04
-ROLL_EXIT_THRESHOLD  = 0.06
+ROLL_THRESHOLD       = 0.05
+ROLL_EXIT_THRESHOLD  = 0.09
 ROLL_STABLE_COUNT    = 3
 
-ROLL_MAX_SPEED       = 30
-ROLL_DEADZONE        = 0.04
-ROLL_KP              = 4.0
+ROLL_MAX_SPEED       = 25
+ROLL_DEADZONE        = 0.05
+ROLL_KP              = 25.0
 ROLL_KI              = 0.0
 ROLL_KD              = 0.0
 ROLL_INTEGRAL_LIMIT  = 20.0
 MIN_APPLICABLE_SPEED_ROLL = 10
 
 # =====================================================
-# THROTTLE — پیکسل
+# THROTTLE — (دیگر استفاده نمی‌شود ولی برای سازگاری می‌ماند)
 # =====================================================
 THROTTLE_THRESHOLD       = 13.0
 THROTTLE_STABLE_COUNT    = 3
@@ -80,9 +83,9 @@ MIN_APPLICABLE_SPEED_THR = 10
 # APPROACH
 # =====================================================
 APPROACH_SPEED = 20
-APPROACH_CENTER_DEADZONE_YAW  = 2.0     # درجه
+APPROACH_CENTER_DEADZONE_YAW  = 0.05
 APPROACH_CENTER_DEADZONE_THR  = 9
-APPROACH_CENTER_DEADZONE_ROLL = 0.03
+APPROACH_CENTER_DEADZONE_ROLL = 0.05
 APPROACH_CENTER_MAX           = 15
 
 AREA_RATIO_THRESHOLD   = 0.35
@@ -101,7 +104,7 @@ PASS_AREA_DROP     = 0.45
 # Camera Offset
 # =====================================================
 CAMERA_CENTER_OFFSET_X = 0
-CAMERA_CENTER_OFFSET_Y = 150
+CAMERA_CENTER_OFFSET_Y = 0
 
 
 # =====================================================
@@ -156,15 +159,8 @@ class PID:
 def get_camera_center(frame_shape):
     h, w = frame_shape[:2]
     cx = w // 2 + CAMERA_CENTER_OFFSET_X
-    cy = 117
+    cy = h // 2 + CAMERA_CENTER_OFFSET_Y
     return (cx, cy)
-
-
-def calculate_throttle_error(window_center, camera_center):
-    """خطای Throttle = فاصله عمودی مرکز پنجره از مرکز دوربین (پیکسل)"""
-    if window_center is None or camera_center is None:
-        return None
-    return float(window_center[1] - camera_center[1])
 
 
 # =====================================================
@@ -196,7 +192,7 @@ class Aligner:
         self.pid_roll = PID(Kp=ROLL_KP, Ki=ROLL_KI, Kd=ROLL_KD,
                             integral_limit=ROLL_INTEGRAL_LIMIT)
 
-        # ---- THROTTLE ----
+        # ---- THROTTLE (legacy) ----
         self.throttle_stable_count = 0
         self.throttle_centered = False
         self.EXIT_THROTTLE_THRESHOLD = THROTTLE_THRESHOLD * 2
@@ -214,8 +210,8 @@ class Aligner:
         self.pass_extra_time = None
 
         # smoothing
-        self.smoothed_yaw_deg = None        # درجه (جدید)
-        self.smoothed_yaw_ref = [None]      # برای solvePnP EMA
+        self.smoothed_yaw_deg = None
+        self.smoothed_yaw_ref = [None]
         self.smoothed_throttle = None
         self.smoothed_roll = None
         self.ALPHA = 0.3
@@ -375,7 +371,7 @@ class Aligner:
                               False, False, False, False)
 
         # =====================================================
-        # پنجره دیده شد → YAW (solvePnP) + ROLL همزمان
+        # پنجره دیده شد → YAW (مرکز) + ROLL (مرکز) همزمان
         # =====================================================
         self.lost_frames = 0
 
@@ -388,50 +384,50 @@ class Aligner:
             self.up_after_search = False
             self.up_start_time = None
 
-        # ---------- YAW با solvePnP ----------
-        if mask_tensor is not None:
-            yaw_err_raw, corners = calculate_yaw_error(
-                raw_mask_tensor=mask_tensor,
-                frame_shape=frame_shape,
-                smoothed_yaw_ref=self.smoothed_yaw_ref,
-                min_area=MIN_MASK_AREA,
-                device=DEVICE
-            )
-            self.last_corners = corners
-        else:
-            # اگر ماسک نبود، fallback: خطای پیکسلی افقی
-            yaw_err_raw = float(window_center[0] - camera_center[0]) * 0.05
-            self.last_corners = None
+        # ---------- YAW از مرکز پنجره (افقی) ----------
+        yaw_err_raw = calculate_yaw_error_center(
+            window_center, camera_center, frame_shape
+        )
 
-        # ---------- ROLL از مرکز پنجره ----------
+        # ---------- ROLL از مرکز پنجره (عمودی) ----------
         roll_err_raw, dist_left, dist_right = calculate_roll_error(
-            window_center, frame_shape
+            window_center, camera_center, frame_shape
         )
         self.last_dist_left = dist_left
         self.last_dist_right = dist_right
 
-        # ---------- THROTTLE از مرکز پنجره ----------
-        thr_err_raw = calculate_throttle_error(window_center, camera_center)
+        # ---------- حلقه solvePnP (فقط برای گوشه‌ها / دیباگ) ----------
+        if mask_tensor is not None:
+            try:
+                _, corners = calculate_yaw_error(
+                    raw_mask_tensor=mask_tensor,
+                    frame_shape=frame_shape,
+                    smoothed_yaw_ref=self.smoothed_yaw_ref,
+                    min_area=MIN_MASK_AREA,
+                    device=DEVICE
+                )
+                self.last_corners = corners
+            except Exception:
+                self.last_corners = None
+        else:
+            self.last_corners = None
 
         # ---------- smoothing ----------
         if self.smoothed_yaw_deg is None:
             self.smoothed_yaw_deg = yaw_err_raw
         else:
-            self.smoothed_yaw_deg = ((1 - self.ALPHA) * self.smoothed_yaw_deg + self.ALPHA * yaw_err_raw)
+            self.smoothed_yaw_deg = ((1 - self.ALPHA) * self.smoothed_yaw_deg
+                                     + self.ALPHA * yaw_err_raw)
 
         if self.smoothed_roll is None:
             self.smoothed_roll = roll_err_raw
         else:
-            self.smoothed_roll = ((1 - self.ALPHA) * self.smoothed_roll + self.ALPHA * roll_err_raw)
+            self.smoothed_roll = ((1 - self.ALPHA) * self.smoothed_roll
+                                  + self.ALPHA * roll_err_raw)
 
-        if self.smoothed_throttle is None:
-            self.smoothed_throttle = thr_err_raw
-        else:
-            self.smoothed_throttle = ((1 - self.ALPHA) * self.smoothed_throttle + self.ALPHA * thr_err_raw)
-
-        yaw_err  = self.smoothed_yaw_deg      # درجه
-        roll_err = self.smoothed_roll       # نرمالایز
-        thr_err  = self.smoothed_throttle     # پیکسل
+        yaw_err  = self.smoothed_yaw_deg
+        roll_err = self.smoothed_roll
+        thr_err  = 0.0  # دیگر استفاده نمی‌شود
 
         yaw_cmd = 0
         throttle_cmd = 0
@@ -444,7 +440,7 @@ class Aligner:
         if not (self.yaw_centered and self.roll_centered):
             self.stage = "YAW+ROLL"
 
-            # ---------- YAW ----------
+            # ---------- YAW (افقی) ----------
             if not self.yaw_centered:
                 if abs(yaw_err) < YAW_THRESHOLD:
                     yaw_cmd = 0
@@ -452,21 +448,23 @@ class Aligner:
                     self.yaw_stable_count += 1
                     if self.yaw_stable_count >= YAW_STABLE_COUNT:
                         self.yaw_centered = True
-                        print(f"[INFO] ✅ YAW CENTERED (err={yaw_err:+.2f}°)")
+                        print(f"[INFO] ✅ YAW CENTERED (err={yaw_err:+.3f})")
                 else:
                     pid_out = self.pid_yaw.update(yaw_err)
                     yaw_cmd = int(np.clip(pid_out, -YAW_MAX_SPEED, YAW_MAX_SPEED))
-                    if (abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW and abs(yaw_err) > YAW_DEADZONE):
-                        yaw_cmd = (-MIN_APPLICABLE_SPEED_YAW if yaw_err > 0 else MIN_APPLICABLE_SPEED_YAW)
+                    if (abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW
+                            and abs(yaw_err) > YAW_DEADZONE):
+                        yaw_cmd = (-MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
+                                   else MIN_APPLICABLE_SPEED_YAW)
                     self.yaw_stable_count = 0
             else:
                 if abs(yaw_err) > self.EXIT_YAW_THRESHOLD:
-                    print(f"[INFO] 🔄 EXIT YAW (err={yaw_err:+.2f}°)")
+                    print(f"[INFO] 🔄 EXIT YAW (err={yaw_err:+.3f})")
                     self.yaw_centered = False
                     self.yaw_stable_count = 0
                     self.pid_yaw.reset()
 
-            # ---------- ROLL ----------
+            # ---------- ROLL (عمودی) ----------
             if not self.roll_centered:
                 if abs(roll_err) < ROLL_THRESHOLD:
                     roll_cmd = 0
@@ -476,12 +474,12 @@ class Aligner:
                         self.roll_centered = True
                         print(f"[INFO] ✅ ROLL CENTERED (err={roll_err:+.3f})")
                 else:
-                    pid_out = self.pid_roll.update(roll_err)
+                    pid_out = self.pid_roll.update(-roll_err)
                     roll_cmd = int(np.clip(pid_out, -ROLL_MAX_SPEED, ROLL_MAX_SPEED))
                     if (abs(roll_cmd) < MIN_APPLICABLE_SPEED_ROLL
                             and abs(roll_err) > ROLL_DEADZONE):
-                        roll_cmd = (MIN_APPLICABLE_SPEED_ROLL if roll_err > 0
-                                    else -MIN_APPLICABLE_SPEED_ROLL)
+                        roll_cmd = (-MIN_APPLICABLE_SPEED_ROLL if roll_err > 0
+                                    else MIN_APPLICABLE_SPEED_ROLL)
                     self.roll_stable_count = 0
             else:
                 if abs(roll_err) > self.EXIT_ROLL_THRESHOLD:
@@ -494,40 +492,9 @@ class Aligner:
                 print(f"[INFO] 🎯 YAW + ROLL ALIGNED")
 
         # =====================================================
-        # مرحله ۲: THROTTLE
-        # =====================================================
-        if (self.yaw_centered and self.roll_centered
-                and not self.throttle_centered):
-            self.stage = "THROTTLE"
-
-            if abs(thr_err) < THROTTLE_THRESHOLD:
-                throttle_cmd = 0
-                self.pid_throttle.reset()
-                self.throttle_stable_count += 1
-                if self.throttle_stable_count >= THROTTLE_STABLE_COUNT:
-                    self.throttle_centered = True
-                    print(f"[INFO] ✅ THROTTLE CENTERED (err={thr_err:+.1f}px)")
-            else:
-                pid_out = self.pid_throttle.update(-thr_err)
-                throttle_cmd = int(np.clip(pid_out, -THR_MAX_SPEED, THR_MAX_SPEED))
-                if (abs(throttle_cmd) < MIN_APPLICABLE_SPEED_THR
-                        and abs(thr_err) > MIN_APPLICABLE_SPEED_THR):
-                    throttle_cmd = (-MIN_APPLICABLE_SPEED_THR if thr_err > 0
-                                    else MIN_APPLICABLE_SPEED_THR)
-                self.throttle_stable_count = 0
-
-        elif self.throttle_centered:
-            if abs(thr_err) > self.EXIT_THROTTLE_THRESHOLD:
-                print(f"[INFO] 🔄 EXIT THROTTLE (err={thr_err:+.1f}px)")
-                self.throttle_centered = False
-                self.throttle_stable_count = 0
-                self.pid_throttle.reset()
-
-        # =====================================================
         # مرحله ۳: APPROACH
         # =====================================================
         if (self.yaw_centered and self.roll_centered
-                and self.throttle_centered
                 and self.stage != "APPROACH"):
             self.stage = "APPROACH"
             self.approach_start_time = time.time()
@@ -546,29 +513,18 @@ class Aligner:
                     -APPROACH_CENTER_MAX, APPROACH_CENTER_MAX
                 ))
                 if abs(yaw_cmd) < MIN_APPLICABLE_SPEED_YAW:
-                    yaw_cmd = (MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
-                               else -MIN_APPLICABLE_SPEED_YAW)
+                    yaw_cmd = (-MIN_APPLICABLE_SPEED_YAW if yaw_err > 0
+                               else MIN_APPLICABLE_SPEED_YAW)
 
             # ROLL در APPROACH
             if abs(roll_err) > APPROACH_CENTER_DEADZONE_ROLL:
                 roll_cmd = int(np.clip(
-                    self.pid_roll.update(roll_err),
+                    self.pid_roll.update(-roll_err),
                     -APPROACH_CENTER_MAX, APPROACH_CENTER_MAX
                 ))
                 if abs(roll_cmd) < MIN_APPLICABLE_SPEED_ROLL:
                     roll_cmd = (-MIN_APPLICABLE_SPEED_ROLL if roll_err > 0
                                 else MIN_APPLICABLE_SPEED_ROLL)
-
-            # THROTTLE در APPROACH
-            if abs(thr_err) > APPROACH_CENTER_DEADZONE_THR:
-                throttle_cmd = int(np.clip(
-                    self.pid_throttle.update(-thr_err),
-                    -APPROACH_CENTER_MAX, APPROACH_CENTER_MAX
-                ))
-                if abs(throttle_cmd) < MIN_APPLICABLE_SPEED_THR:
-                    throttle_cmd = (-MIN_APPLICABLE_SPEED_THR
-                                    if throttle_cmd > 0
-                                    else MIN_APPLICABLE_SPEED_THR)
 
             forward_cmd = APPROACH_SPEED
 
@@ -658,7 +614,6 @@ def draw_info(frame, info, window_center=None, camera_center=None,
 
     ccx, ccy = camera_center
 
-    # مرکز دوربین (قرمز)
     cv2.circle(frame, (ccx, ccy), 8, (0, 0, 255), -1)
     cv2.circle(frame, (ccx, ccy), 14, (0, 0, 255), 2)
     cv2.putText(frame, "CAM", (ccx + 18, ccy - 10),
@@ -666,7 +621,6 @@ def draw_info(frame, info, window_center=None, camera_center=None,
     cv2.line(frame, (ccx, 0), (ccx, h), (0, 0, 255), 1)
     cv2.line(frame, (0, ccy), (w, ccy), (0, 0, 255), 1)
 
-    # مرکز پنجره
     if window_center is not None:
         wcx, wcy = window_center
         cv2.circle(frame, (wcx, wcy), 8, (0, 255, 0), -1)
@@ -692,14 +646,12 @@ def draw_info(frame, info, window_center=None, camera_center=None,
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (255, 0, 255), 2)
 
-    # گوشه‌های پنجره (solvePnP)
     if corners is not None and len(corners) == 4:
         pts = corners.reshape(-1, 1, 2).astype(np.int32)
         cv2.polylines(frame, [pts], True, (0, 255, 255), 2)
         for p in corners.reshape(-1, 2):
             cv2.circle(frame, tuple(p.astype(int)), 5, (0, 0, 255), -1)
 
-    # HUD
     stage = info["stage"]
     stage_colors = {
         "YAW": (0, 200, 255), "YAW+ROLL": (0, 200, 255),
@@ -716,7 +668,7 @@ def draw_info(frame, info, window_center=None, camera_center=None,
     if ye is not None:
         c = (0, 255, 0) if info.get("yaw_centered") else (0, 255, 255)
         cv2.putText(frame,
-                    f"YAW = {ye:+.2f}deg  CMD = {info.get('yaw_cmd', 0):+d}",
+                    f"YAW = {ye:+.3f}  CMD = {info.get('yaw_cmd', 0):+d}",
                     (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
 
     re = info.get("roll_error")
@@ -726,19 +678,12 @@ def draw_info(frame, info, window_center=None, camera_center=None,
                     f"ROLL = {re:+.3f}  CMD = {info.get('roll_cmd', 0):+d}",
                     (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
 
-    te = info.get("throttle_error")
-    if te is not None:
-        c = (0, 255, 0) if info.get("throttle_centered") else (0, 255, 255)
-        cv2.putText(frame,
-                    f"THR = {te:+.1f}px  CMD = {info.get('throttle_cmd', 0):+d}",
-                    (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6, c, 2)
-
     a = info.get("area")
     if a is not None:
         total = h * w
         ratio = a / total
         cv2.putText(frame, f"AREA = {a} ({ratio*100:.1f}%)",
-                    (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (0, 255, 255), 2)
 
     if info.get("pass_completed", False):
@@ -826,7 +771,6 @@ try:
                     best_box = (x1, y1, x2, y2)
                     best_conf = conf
 
-                    # ماسک سگمنتیشن (اگر مدل seg باشد)
                     if (result.masks is not None
                             and i < len(result.masks.data)):
                         best_mask_tensor = result.masks.data[i]
