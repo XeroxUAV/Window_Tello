@@ -57,7 +57,7 @@ YAW_INTEGRAL_LIMIT = 100.0
 # =====================================================
 ROLL_MAX_SPEED = 18
 ROLL_DEADZONE = 0.04
-ROLL_KP = 12
+ROLL_KP = 0.4
 ROLL_KI = 0.0
 ROLL_KD = 0.0
 ROLL_INTEGRAL_LIMIT = 20.0
@@ -73,14 +73,14 @@ THR_MAX_SPEED = 25
 
 # --- حداقل سرعت‌ها ---
 MIN_APPLICABLE_SPEED_THR = 10
-MIN_APPLICABLE_SPEED_YAW = 6
-MIN_APPLICABLE_SPEED_ROLL = 14
+MIN_APPLICABLE_SPEED_YAW = 5
+MIN_APPLICABLE_SPEED_ROLL = 18
 
 # --- APPROACH ---
 APPROACH_SPEED = 12
 APPROACH_CENTER_DEADZONE_YAW = 9
 APPROACH_CENTER_DEADZONE_THR = 9
-APPROACH_CENTER_DEADZONE_ROLL = 0.05
+APPROACH_CENTER_DEADZONE_ROLL = 0.1
 APPROACH_CENTER_MAX = 15
 
 AREA_RATIO_THRESHOLD = 0.35
@@ -151,7 +151,7 @@ def get_camera_center(frame_shape):
     """مرکز دوربین = وسط فریم + افست"""
     h, w = frame_shape[:2]
     cx = w // 2 + CAMERA_CENTER_OFFSET_X
-    cy = 125
+    cy = 130
     return (cx, cy)
 
 
@@ -564,13 +564,9 @@ class Aligner:
 
             # ROLL در APPROACH (آروم‌تر، همزمان)
             if ENABLE_ROLL and abs(roll_err) > APPROACH_CENTER_DEADZONE_ROLL:
-                roll_cmd = int(np.clip(
-                    self.pid_roll.update(roll_err),
-                    -APPROACH_CENTER_MAX, APPROACH_CENTER_MAX
-                ))
+                roll_cmd = int(np.clip(self.pid_roll.update(roll_err),-APPROACH_CENTER_MAX, APPROACH_CENTER_MAX))
                 if abs(roll_cmd) < MIN_APPLICABLE_SPEED_ROLL:
-                    roll_cmd = (MIN_APPLICABLE_SPEED_ROLL if roll_err > 0
-                                else -MIN_APPLICABLE_SPEED_ROLL)
+                    roll_cmd = (MIN_APPLICABLE_SPEED_ROLL if roll_err > 0 else -MIN_APPLICABLE_SPEED_ROLL)
 
             # THROTTLE در APPROACH
             if abs(thr_err) > APPROACH_CENTER_DEADZONE_THR:
