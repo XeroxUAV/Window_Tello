@@ -47,7 +47,7 @@ THROTTLE_STABLE_COUNT = 3
 # =====================================================
 YAW_MAX_SPEED = 35
 YAW_DEADZONE = 15.0
-YAW_KP = 0.03
+YAW_KP = 0.0005
 YAW_KI = 0.00
 YAW_KD = 0.0
 YAW_INTEGRAL_LIMIT = 100.0
@@ -57,7 +57,7 @@ YAW_INTEGRAL_LIMIT = 100.0
 # =====================================================
 ROLL_MAX_SPEED = 18
 ROLL_DEADZONE = 0.04
-ROLL_KP = 2
+ROLL_KP = 12
 ROLL_KI = 0.0
 ROLL_KD = 0.0
 ROLL_INTEGRAL_LIMIT = 20.0
@@ -73,14 +73,14 @@ THR_MAX_SPEED = 25
 
 # --- حداقل سرعت‌ها ---
 MIN_APPLICABLE_SPEED_THR = 10
-MIN_APPLICABLE_SPEED_YAW = 9
-MIN_APPLICABLE_SPEED_ROLL = 9
+MIN_APPLICABLE_SPEED_YAW = 6
+MIN_APPLICABLE_SPEED_ROLL = 14
 
 # --- APPROACH ---
-APPROACH_SPEED = 20
-APPROACH_CENTER_DEADZONE_YAW = 10
+APPROACH_SPEED = 12
+APPROACH_CENTER_DEADZONE_YAW = 9
 APPROACH_CENTER_DEADZONE_THR = 9
-APPROACH_CENTER_DEADZONE_ROLL = 0.03
+APPROACH_CENTER_DEADZONE_ROLL = 0.05
 APPROACH_CENTER_MAX = 15
 
 AREA_RATIO_THRESHOLD = 0.35
@@ -151,7 +151,7 @@ def get_camera_center(frame_shape):
     """مرکز دوربین = وسط فریم + افست"""
     h, w = frame_shape[:2]
     cx = w // 2 + CAMERA_CENTER_OFFSET_X
-    cy = 118
+    cy = 125
     return (cx, cy)
 
 
